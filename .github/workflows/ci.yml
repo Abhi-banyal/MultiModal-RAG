@@ -1,6 +1,7 @@
+
 name: CI
 
-# Run CI for every pull request and for code pushed to the production branch.
+# Run CI for every pull request and for code pushed to the main branch.
 on:
   push:
     branches:
@@ -33,10 +34,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 tesseract-ocr
 
-      # Install FastAPI backend dependencies from the detected requirements file.
+      # Install production dependencies and test/dev dependencies.
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
+
           if [ -f requirements.txt ]; then
             python -m pip install -r requirements.txt
           elif [ -f pyproject.toml ]; then
@@ -45,7 +47,14 @@ jobs:
             echo "No requirements.txt or pyproject.toml found. Add one before enabling stricter backend CI."
           fi
 
-      # Import the FastAPI application without reading or committing any real .env secrets.
+          if [ -f requirements-dev.txt ]; then
+            python -m pip install -r requirements-dev.txt
+          else
+            echo "requirements-dev.txt not found. Installing basic test dependencies."
+            python -m pip install pytest httpx
+          fi
+
+      # Import the FastAPI application without requiring real .env secrets.
       - name: Verify backend imports
         env:
           USE_AZURE_OPENAI: "false"
@@ -55,7 +64,7 @@ jobs:
         run: |
           python -c "from app.main import app; print(f'Imported FastAPI app: {app.title}')"
 
-      # Run tests only when a tests directory exists. Add backend tests under tests/ to enable this step.
+      # Run tests only when a tests directory exists.
       - name: Run backend tests when available
         env:
           USE_AZURE_OPENAI: "false"
@@ -64,7 +73,7 @@ jobs:
           QDRANT_LOCAL_PATH: "/tmp/multimodal-rag-ci-qdrant"
         run: |
           if [ -d tests ]; then
-            pytest -q
+            python -m pytest -q
           else
             echo "No tests/ directory found. Add pytest tests under tests/ for backend coverage."
           fi
@@ -82,7 +91,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # Use a current LTS Node.js release for Vite and React builds.
+      # Use a current Node.js release for Vite and React builds.
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -116,7 +125,6 @@ jobs:
       - backend
       - frontend
 
-    # These values come from GitHub repository secrets. They stay empty for forks or repos that have not configured Docker Hub publishing.
     env:
       DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
@@ -127,43 +135,72 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # Set up Docker Buildx for reliable layer caching and multi-platform-capable builds.
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      # Validate Docker publishing settings when publishing is configured.
+      - name: Validate Docker image settings
+        run: |
+          if [ -z "$DOCKER_USERNAME" ] && [ -z "$DOCKER_PASSWORD" ] && [ -z "$DOCKER_IMAGE_NAME" ]; then
+            echo "Docker publishing is not configured. The workflow will only build the image."
+            exit 0
+          fi
 
-      # Build the image on every CI run to catch Dockerfile and dependency issues.
+          if [ -z "$DOCKER_USERNAME" ] || [ -z "$DOCKER_PASSWORD" ] || [ -z "$DOCKER_IMAGE_NAME" ]; then
+            echo "Docker publishing is partially configured."
+            echo "Required values:"
+            echo "- vars.DOCKER_USERNAME"
+            echo "- secrets.DOCKER_PASSWORD"
+            echo "- vars.DOCKER_IMAGE_NAME"
+            exit 1
+          fi
+
+          if [[ "$DOCKER_USERNAME" =~ [A-Z] ]]; then
+            echo "DOCKER_USERNAME must be lowercase."
+            exit 1
+          fi
+
+          if [[ "$DOCKER_IMAGE_NAME" =~ [A-Z] ]]; then
+            echo "DOCKER_IMAGE_NAME must be lowercase."
+            exit 1
+          fi
+
+          if [[ "$DOCKER_IMAGE_NAME" == *"/"* || "$DOCKER_IMAGE_NAME" == *":"* ]]; then
+            echo "DOCKER_IMAGE_NAME should be only the repository name, for example: multimodal-rag"
+            exit 1
+          fi
+
+          echo "Docker image settings are valid."
+          echo "Image will be: docker.io/$DOCKER_USERNAME/$DOCKER_IMAGE_NAME"
+
+      # Build the Docker image on every CI run.
       - name: Build Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: false
-          tags: multimodal-rag:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        run: |
+          if [ -n "$DOCKER_USERNAME" ] && [ -n "$DOCKER_IMAGE_NAME" ]; then
+            IMAGE_NAME="docker.io/$DOCKER_USERNAME/$DOCKER_IMAGE_NAME"
+            docker build \
+              -t "$IMAGE_NAME:latest" \
+              -t "$IMAGE_NAME:${GITHUB_SHA}" \
+              .
+          else
+            docker build -t multimodal-rag:ci .
+          fi
 
-      # Authenticate only when Docker Hub secrets are configured.
+      # Log in to Docker Hub only when Docker publishing is configured.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != '' && env.DOCKER_IMAGE_NAME != '' }}
-        uses: docker/login-action@v3
-        with:
-          username: ${{ env.DOCKER_USERNAME }}
-          password: ${{ env.DOCKER_PASSWORD }}
+        run: |
+          echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
 
-      # Push only from main after a successful build and only when all Docker Hub secrets exist.
+      # Push only from main branch after backend, frontend, and Docker build pass.
       - name: Push Docker image to Docker Hub
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != '' && env.DOCKER_IMAGE_NAME != '' }}
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: |
-            ${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:latest
-            ${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: false
-          sbom: false
+        run: |
+          IMAGE_NAME="docker.io/$DOCKER_USERNAME/$DOCKER_IMAGE_NAME"
 
-      
+          docker push "$IMAGE_NAME:latest"
+          docker push "$IMAGE_NAME:${GITHUB_SHA}"
+
+      # Explain why image was not pushed.
+      - name: Skip Docker push when secrets or variables are missing
+        if: ${{ env.DOCKER_USERNAME == '' || env.DOCKER_PASSWORD == '' || env.DOCKER_IMAGE_NAME == '' }}
+        run: |
+          echo "Docker image build passed."
+          echo "Skipping Docker Hub push because Docker publishing settings are not fully configured."
