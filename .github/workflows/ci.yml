@@ -163,8 +163,7 @@ jobs:
             ${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
 
-      # Explain why no image was pushed when publishing secrets are not set.
-      - name: Skip Docker push when secrets are missing
-        if: ${{ env.DOCKER_USERNAME == '' || env.DOCKER_PASSWORD == '' || env.DOCKER_IMAGE_NAME == '' }}
-        run: echo "Docker image build passed. Skipping Docker Hub push because one or more Docker secrets are not configured."
+      
