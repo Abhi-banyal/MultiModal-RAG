@@ -118,9 +118,9 @@ jobs:
 
     # These values come from GitHub repository secrets. They stay empty for forks or repos that have not configured Docker Hub publishing.
     env:
-      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-      DOCKER_IMAGE_NAME: ${{ secrets.DOCKER_IMAGE_NAME }}
+      DOCKER_IMAGE_NAME: ${{ vars.DOCKER_IMAGE_NAME }}
 
     steps:
       # Download the repository contents into the GitHub Actions runner.
