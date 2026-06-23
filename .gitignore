@@ -14,10 +14,6 @@ __pycache__/
 .coverage
 htmlcov/
 .index_meta.json
-.qdrant/
-qdrant_storage/
-vectorstore/
-vectorstores/
 *.pyc
 *.pyo
 *.pyd
@@ -30,3 +26,4 @@ frontend/dist/
 *.sqlite3
 *.duckdb
 *.log
+vectorstores/qdrant_local
