@@ -55,7 +55,7 @@ class QdrantStore:
             self.model = SentenceTransformer(
                 config.EMBEDDING_MODEL,
                 device=config.EMBEDDING_DEVICE,
-                local_files_only=True,
+                local_files_only=False,
             )
             if hasattr(self.model, "get_embedding_dimension"):
                 self.embedding_dim = int(self.model.get_embedding_dimension())

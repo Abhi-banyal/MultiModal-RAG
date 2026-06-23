@@ -19,5 +19,4 @@ numpy>=1.26
 
 openai>=1.30
 
-pytest>=8.0
-httpx>=0.27
+
