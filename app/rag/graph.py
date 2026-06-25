@@ -36,9 +36,7 @@ class RAGGraph:
         self.generator = AnswerGenerator()
         self.graph = self._build_graph() if StateGraph is not None else None
 
-
-        print("langGraph working:", self.graph is not None)
-        print("Graph object:", type(self.graph))
+        logger.info("LangGraph enabled=%s graph_type=%s", self.graph is not None, type(self.graph).__name__)
 
     def _retriever_vector_count(self) -> int:
         vector_count = getattr(self.retriever, "vector_count", None)

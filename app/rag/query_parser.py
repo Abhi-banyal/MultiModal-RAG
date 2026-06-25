@@ -30,7 +30,6 @@ VISUAL_TERMS = {
 CHART_TERMS = {"chart", "graph", "trend", "axis", "legend", "values", "revenue", "profit", "net profit"}
 DIAGRAM_TERMS = {"diagram", "taxonomy", "architecture", "flow", "figure"}
 LIST_TERMS = {
-    "architecture",
     "architectures",
     "categories",
     "category",

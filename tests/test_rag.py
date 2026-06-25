@@ -551,6 +551,79 @@ def test_answer_generator_uses_cropped_pdf_visual_url(monkeypatch):
     assert sources[0]["visual_url"] == "/visuals/company_chart.pdf?page_number=1&crop=visual"
 
 
+def test_answer_generator_uses_cropped_raster_visual_url(monkeypatch):
+    from app.core import config
+    import app.rag.answer_generator as answer_module
+
+    monkeypatch.setattr(config, "USE_AZURE_OPENAI", False)
+
+    generator = answer_module.AnswerGenerator()
+    _, sources = generator.generate(
+        "what is the first step in cnn architecture?",
+        [
+            {
+                "text": "CNN Architecture Diagram. The input image is the first step.",
+                "metadata": {
+                    "file_name": "cnn_diagram.png",
+                    "content_type": "diagram_summary",
+                    "chunk_type": "diagram_summary",
+                    "contains_diagram": True,
+                    "contains_image": True,
+                    "visual_type": "architecture",
+                },
+            }
+        ],
+    )
+
+    assert sources[0]["visual_url"] == "/visuals/cnn_diagram.png?crop=visual"
+
+
+def test_answer_generator_scopes_direct_visual_question_to_top_visual_source(monkeypatch):
+    from app.core import config
+    import app.rag.answer_generator as answer_module
+
+    monkeypatch.setattr(config, "USE_AZURE_OPENAI", False)
+
+    generator = answer_module.AnswerGenerator()
+    answer, sources = generator.generate(
+        "what is the first step in cnn architecture?",
+        [
+            {
+                "text": "CNN Architecture Diagram. The input image is the first step, followed by convolution.",
+                "score": 50.0,
+                "metadata": {
+                    "file_name": "cnn_diagram.png",
+                    "content_type": "diagram_summary",
+                    "chunk_type": "diagram_summary",
+                    "contains_diagram": True,
+                    "contains_image": True,
+                    "visual_type": "architecture",
+                    "title": "CNN Architecture Diagram",
+                },
+            },
+            {
+                "text": "RNN diagram context that should not be used for the CNN answer.",
+                "score": 40.0,
+                "metadata": {
+                    "file_name": "deep_learning.pdf",
+                    "page_number": 7,
+                    "content_type": "image_description",
+                    "chunk_type": "image_description",
+                    "contains_diagram": True,
+                    "contains_image": True,
+                    "visual_type": "diagram",
+                    "title": "Recurrent neural networks",
+                },
+            },
+        ],
+    )
+
+    assert "input image" in answer.lower()
+    assert "RNN" not in answer
+    assert len(sources) == 1
+    assert sources[0]["file_name"] == "cnn_diagram.png"
+
+
 def test_answer_generator_does_not_attach_visual_url_for_generic_pdf_page_image(monkeypatch):
     from app.core import config
     import app.rag.answer_generator as answer_module
