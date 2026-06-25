@@ -11,6 +11,9 @@ from ..core import config, logging
 logger = logging.logger
 _CLIENT_CACHE: Dict[str, Any] = {}
 
+def _empty_json_store() -> Dict[str, List[Any]]:
+    return {"vectors": [], "metadatas": [], "ids": [], "texts": []}
+
 try:
     from qdrant_client import QdrantClient
     from qdrant_client.http import models as rest
@@ -32,7 +35,7 @@ class QdrantStore:
         self.model = None
         self.active_store = "initializing"
         self._json_path = config.QDRANT_LOCAL_PATH / "fallback_vectors.json"
-        self._json_store = {"vectors": [], "metadatas": [], "ids": [], "texts": []}
+        self._json_store = _empty_json_store()
 
         self._load_embedding_model()
         self._connect_vector_store()
@@ -167,11 +170,49 @@ class QdrantStore:
             self._json_store = json.loads(self._json_path.read_text(encoding="utf-8"))
         except Exception:
             logger.exception("Failed to read JSON vector fallback; starting with an empty local store")
-            self._json_store = {"vectors": [], "metadatas": [], "ids": [], "texts": []}
+            self._json_store = _empty_json_store()
 
     def _save_json_store(self) -> None:
         self._json_path.parent.mkdir(parents=True, exist_ok=True)
         self._json_path.write_text(json.dumps(self._json_store, indent=2), encoding="utf-8")
+
+    def _point_payload(self, metadata: Dict[str, Any], text: str) -> Dict[str, Any]:
+        return {
+            "metadata": metadata,
+            "text": text,
+            "source_file": metadata.get("source_file"),
+            "source_path": metadata.get("source_path"),
+            "page_number": metadata.get("page_number"),
+            "content_type": metadata.get("content_type"),
+            "chunk_type": metadata.get("chunk_type"),
+            "extraction_method": metadata.get("extraction_method"),
+            "file_hash": metadata.get("file_hash"),
+            "file_name": metadata.get("file_name"),
+            "section_title": metadata.get("section_title"),
+            "year": metadata.get("year"),
+            "document_type": metadata.get("document_type"),
+            "quarter": metadata.get("quarter"),
+            "metric_names": metadata.get("metric_names"),
+            "title": metadata.get("title"),
+            "caption": metadata.get("caption"),
+            "figure_number": metadata.get("figure_number"),
+            "visual_type": metadata.get("visual_type"),
+            "contains_chart": metadata.get("contains_chart"),
+            "contains_diagram": metadata.get("contains_diagram"),
+            "contains_table": metadata.get("contains_table"),
+            "contains_image": metadata.get("contains_image"),
+        }
+
+    def _search_result(self, item_id: Any, score: float, metadata: Dict[str, Any], text: str) -> Dict[str, Any]:
+        return {"id": str(item_id), "score": float(score), "metadata": metadata, "text": text}
+
+    def _json_search_result(self, index: int, score: float) -> Dict[str, Any]:
+        return self._search_result(
+            self._json_store["ids"][index],
+            score,
+            self._json_store["metadatas"][index],
+            self._json_store["texts"][index],
+        )
 
     def _embed_texts(self, texts: List[str]) -> List[List[float]]:
         if self.model is not None:
@@ -204,31 +245,7 @@ class QdrantStore:
 
             points = []
             for index, doc_id in enumerate(ids):
-                payload = {
-                    "metadata": metadatas[index],
-                    "text": texts[index],
-                    "source_file": metadatas[index].get("source_file"),
-                    "source_path": metadatas[index].get("source_path"),
-                    "page_number": metadatas[index].get("page_number"),
-                    "content_type": metadatas[index].get("content_type"),
-                    "chunk_type": metadatas[index].get("chunk_type"),
-                    "extraction_method": metadatas[index].get("extraction_method"),
-                    "file_hash": metadatas[index].get("file_hash"),
-                    "file_name": metadatas[index].get("file_name"),
-                    "section_title": metadatas[index].get("section_title"),
-                    "year": metadatas[index].get("year"),
-                    "document_type": metadatas[index].get("document_type"),
-                    "quarter": metadatas[index].get("quarter"),
-                    "metric_names": metadatas[index].get("metric_names"),
-                    "title": metadatas[index].get("title"),
-                    "caption": metadatas[index].get("caption"),
-                    "figure_number": metadatas[index].get("figure_number"),
-                    "visual_type": metadatas[index].get("visual_type"),
-                    "contains_chart": metadatas[index].get("contains_chart"),
-                    "contains_diagram": metadatas[index].get("contains_diagram"),
-                    "contains_table": metadatas[index].get("contains_table"),
-                    "contains_image": metadatas[index].get("contains_image"),
-                }
+                payload = self._point_payload(metadatas[index], texts[index])
                 points.append(PointStruct(id=doc_id, vector=vectors[index], payload=payload))
             self.client.upsert(collection_name=self.collection, points=points)
             return len(points)
@@ -298,7 +315,7 @@ class QdrantStore:
                 payload = hit.payload or {}
                 metadata = payload.get("metadata", {})
                 text = payload.get("text", "")
-                results.append({"id": str(hit.id), "score": float(hit.score), "metadata": metadata, "text": text})
+                results.append(self._search_result(hit.id, hit.score, metadata, text))
             return results
 
         scores = []
@@ -312,14 +329,7 @@ class QdrantStore:
         scores.sort(key=lambda item: item[1], reverse=True)
         results = []
         for index, score in scores[:top_k]:
-            results.append(
-                {
-                    "id": self._json_store["ids"][index],
-                    "score": score,
-                    "metadata": self._json_store["metadatas"][index],
-                    "text": self._json_store["texts"][index],
-                }
-            )
+            results.append(self._json_search_result(index, score))
         return results
 
     def reconnect(self) -> bool:
@@ -434,6 +444,6 @@ class QdrantStore:
                 logger.exception("Failed to clear vector store collection")
             return
 
-        self._json_store = {"vectors": [], "metadatas": [], "ids": [], "texts": []}
+        self._json_store = _empty_json_store()
         if self._json_path.exists():
             self._json_path.unlink()

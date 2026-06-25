@@ -9,6 +9,7 @@ from ..core import config, logging as logmod
 from ..rag.graph import RAGGraph
 from ..vectorstores.qdrant_store import QdrantStore
 from ..ingestion.ingestion_service import IngestionService
+from ..utils.image_visuals import raster_visual_crop_bbox
 from ..utils.pdf_visuals import visual_clip_rect
 from . import schemas
 
@@ -23,6 +24,40 @@ IMAGE_MEDIA_TYPES = {
     ".gif": "image/gif",
 }
 
+
+def _store_with_reconnect() -> QdrantStore:
+    store = QdrantStore()
+    if store.count_vectors() == 0:
+        reconnect = getattr(store, "reconnect", None)
+        if callable(reconnect):
+            reconnect()
+    return store
+
+
+def _chunk_debug_payload(item: dict, preview_chars: int) -> dict:
+    metadata = item.get("metadata", {})
+    return {
+        "id": item.get("id"),
+        "file_name": metadata.get("file_name"),
+        "page_number": metadata.get("page_number"),
+        "section_title": metadata.get("section_title"),
+        "content_type": metadata.get("content_type"),
+        "chunk_type": metadata.get("chunk_type"),
+        "title": metadata.get("title"),
+        "caption": metadata.get("caption"),
+        "figure_number": metadata.get("figure_number"),
+        "visual_type": metadata.get("visual_type"),
+        "contains_chart": metadata.get("contains_chart"),
+        "contains_diagram": metadata.get("contains_diagram"),
+        "contains_image": metadata.get("contains_image"),
+        "year": metadata.get("year"),
+        "quarter": metadata.get("quarter"),
+        "metric_names": metadata.get("metric_names"),
+        "document_type": metadata.get("document_type"),
+        "text_preview": (item.get("text") or "")[:preview_chars],
+    }
+
+
 @lru_cache(maxsize=1)
 def get_rag_graph() -> RAGGraph:
     return RAGGraph()
@@ -30,12 +65,8 @@ def get_rag_graph() -> RAGGraph:
 
 @router.get("/health", response_model=schemas.HealthResponse)
 def health():
-    store = QdrantStore()
+    store = _store_with_reconnect()
     vector_count = store.count_vectors()
-    if vector_count == 0:
-        reconnect = getattr(store, "reconnect", None)
-        if callable(reconnect) and reconnect():
-            vector_count = store.count_vectors()
     return {
         "status": "ok",
         "vector_store": store.vector_store_name,
@@ -104,6 +135,22 @@ def get_visual(
 
     suffix = file_path.suffix.lower()
     if suffix in IMAGE_MEDIA_TYPES:
+        if crop == "visual":
+            try:
+                from PIL import Image
+
+                crop_box = raster_visual_crop_bbox(file_path)
+                if crop_box is not None:
+                    with Image.open(file_path) as image:
+                        cropped = image.convert("RGB").crop(crop_box)
+                        import io
+
+                        buffer = io.BytesIO()
+                        cropped.save(buffer, format="PNG")
+                        return Response(content=buffer.getvalue(), media_type="image/png")
+            except Exception as exc:
+                logger.exception("Failed to crop visual image file=%s", file_name)
+                raise HTTPException(status_code=500, detail="Could not crop the visual source image.") from exc
         return FileResponse(path=file_path, media_type=IMAGE_MEDIA_TYPES[suffix])
 
     if suffix == ".pdf":
@@ -140,67 +187,29 @@ def debug_search(req: schemas.DebugSearchRequest):
     ranked = get_rag_graph().debug_search(req.question)
     chunks = []
     for item in ranked:
-        metadata = item.get("metadata", {})
-        chunks.append(
+        payload = _chunk_debug_payload(item, preview_chars=500)
+        payload.update(
             {
-                "id": item.get("id"),
-                "file_name": metadata.get("file_name"),
-                "page_number": metadata.get("page_number"),
-                "section_title": metadata.get("section_title"),
-                "content_type": metadata.get("content_type"),
-                "chunk_type": metadata.get("chunk_type"),
-                "title": metadata.get("title"),
-                "caption": metadata.get("caption"),
-                "figure_number": metadata.get("figure_number"),
-                "visual_type": metadata.get("visual_type"),
-                "contains_chart": metadata.get("contains_chart"),
-                "contains_diagram": metadata.get("contains_diagram"),
-                "contains_image": metadata.get("contains_image"),
-                "year": metadata.get("year"),
-                "quarter": metadata.get("quarter"),
-                "metric_names": metadata.get("metric_names"),
-                "document_type": metadata.get("document_type"),
                 "score": item.get("score"),
                 "dense_score": item.get("dense_score"),
                 "keyword_score": item.get("keyword_score"),
                 "metadata_score": item.get("metadata_score"),
                 "rerank_score": item.get("rerank_score"),
                 "final_score": item.get("final_score"),
-                "text_preview": (item.get("text") or "")[:500],
             }
         )
+        chunks.append(payload)
     return {"question": req.question, "chunks": chunks}
 
 
 @router.post("/debug/chunks")
 def debug_chunks(req: schemas.DebugChunksRequest):
-    store = QdrantStore()
+    store = _store_with_reconnect()
     chunks = []
     for item in store.list_chunks(file_name=req.file_name, limit=500):
-        metadata = item.get("metadata", {})
-        chunks.append(
-            {
-                "id": item.get("id"),
-                "file_name": metadata.get("file_name"),
-                "page_number": metadata.get("page_number"),
-                "section_title": metadata.get("section_title"),
-                "content_type": metadata.get("content_type"),
-                "chunk_type": metadata.get("chunk_type"),
-                "title": metadata.get("title"),
-                "caption": metadata.get("caption"),
-                "figure_number": metadata.get("figure_number"),
-                "visual_type": metadata.get("visual_type"),
-                "contains_chart": metadata.get("contains_chart"),
-                "contains_diagram": metadata.get("contains_diagram"),
-                "contains_image": metadata.get("contains_image"),
-                "year": metadata.get("year"),
-                "quarter": metadata.get("quarter"),
-                "metric_names": metadata.get("metric_names"),
-                "document_type": metadata.get("document_type"),
-                "chunk_index": metadata.get("chunk_index"),
-                "text_preview": (item.get("text") or "")[:800],
-            }
-        )
+        payload = _chunk_debug_payload(item, preview_chars=800)
+        payload["chunk_index"] = item.get("metadata", {}).get("chunk_index")
+        chunks.append(payload)
     return {"file_name": req.file_name, "chunks": chunks, "count": len(chunks)}
 
 

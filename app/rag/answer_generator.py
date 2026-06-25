@@ -82,6 +82,13 @@ class AnswerGenerator:
         chunk_type = metadata.get("chunk_type") or metadata.get("content_type")
 
         if suffix in IMAGE_EXTENSIONS:
+            if (
+                chunk_type in VISUAL_CHUNK_TYPES
+                or metadata.get("contains_chart")
+                or metadata.get("contains_diagram")
+                or metadata.get("contains_image")
+            ):
+                return f"/visuals/{quote(file_name)}?crop=visual"
             return f"/visuals/{quote(file_name)}"
 
         if suffix != ".pdf" or metadata.get("page_number") is None:
@@ -125,6 +132,16 @@ class AnswerGenerator:
             metadata.get("content_type"),
         )
 
+    def _visual_scope_key(self, chunk: Dict[str, Any]) -> Tuple[Any, Any, Any]:
+        metadata = chunk.get("metadata", {})
+        figure_number = metadata.get("figure_number") or None
+        page_number = metadata.get("page_number")
+        return (
+            metadata.get("file_name"),
+            page_number,
+            figure_number if figure_number is not None else page_number,
+        )
+
     def _select_evidence_chunks(
         self,
         question: str,
@@ -145,8 +162,24 @@ class AnswerGenerator:
             if non_page_image_chunks:
                 context_chunks = non_page_image_chunks
 
-        if len(context_chunks) <= 1 or query_filters.get("visual"):
+        if len(context_chunks) <= 1:
             return context_chunks
+
+        if query_filters.get("visual") and not query_filters.get("list_intent"):
+            top_chunk = context_chunks[0]
+            top_scope = self._visual_scope_key(top_chunk)
+            scoped_chunks = [
+                chunk
+                for chunk in context_chunks
+                if self._visual_scope_key(chunk) == top_scope
+                or (
+                    chunk.get("metadata", {}).get("file_name") == top_scope[0]
+                    and top_scope[1] is None
+                    and top_scope[2] is None
+                )
+            ]
+            if scoped_chunks:
+                return scoped_chunks
 
         top_chunk = context_chunks[0]
         top_score = self._chunk_score(top_chunk)
